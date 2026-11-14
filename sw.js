@@ -1,9 +1,9 @@
 // Service worker: guarda tudo no aparelho para funcionar sem rede.
 // Ao alterar qualquer arquivo do app, aumente a versão abaixo.
-var CACHE = 'bussola-v1';
+var CACHE = 'bussola-v2';
 var ARQUIVOS = [
   './', './index.html', './app.js', './wmm.js', './manifest.webmanifest',
-  './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'
+  './icon-192.png', './icon-512.png', './icon-maskable-512.png'
 ];
 
 self.addEventListener('install', function (e) {
