@@ -1,9 +1,10 @@
 // Service worker: guarda tudo no aparelho para funcionar sem rede.
 // Ao alterar qualquer arquivo do app, aumente a versão abaixo.
-var CACHE = 'bussola-v4';
+var CACHE = 'bussola-v5';
 var ARQUIVOS = [
   './', './index.html', './app.js', './wmm.js', './manifest.webmanifest',
-  './icon-192.png', './icon-512.png', './icon-maskable-512.png'
+  './icon-192.png', './icon-512.png', './icon-maskable-512.png',
+  './libs/maplibre-gl.js', './libs/maplibre-gl.css', './libs/pmtiles.js'
 ];
 
 self.addEventListener('install', function (e) {
@@ -23,7 +24,7 @@ self.addEventListener('install', function (e) {
 self.addEventListener('activate', function (e) {
   e.waitUntil(
     caches.keys().then(function (ks) {
-      return Promise.all(ks.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); }));
+      return Promise.all(ks.filter(function (k) { return k.indexOf('bussola-v') === 0 && k !== CACHE; }).map(function (k) { return caches.delete(k); }));
     }).then(function () { return self.clients.claim(); })
   );
 });

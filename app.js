@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  var VERSAO = '4';
+  var VERSAO = '5';
   var GAP_S = 90;          // acima disso entre dois pontos = trecho sem gravação
   var LOOK_M = 15;         // distância mínima até o ponto-alvo na volta
   var rad = Math.PI / 180;
@@ -102,7 +102,7 @@
       if (dt > GAP_S) P[4] = 1;
     }
     pts.push(P);
-    scheduleSave(); renderTrk(); mapDirty = true;
+    scheduleSave(); renderTrk(); mapDirty = true; mapGlDirty = true;
   }
 
   function trkStats() {
@@ -156,7 +156,7 @@
     }
     clrArm = 0; bClr.textContent = 'Limpar trilha';
     trk.pts = []; trk.rec = false; trk.ret = false; trk.retIdx = 0; ret = null;
-    saveTrk(); ensureGps(); renderTrk(); renderRet(); mapDirty = true;
+    saveTrk(); ensureGps(); renderTrk(); renderRet(); mapDirty = true; mapGlDirty = true;
   });
 
   bGpx.addEventListener('click', function () {
@@ -329,7 +329,7 @@
     try { localStorage.setItem('bussolaGps', JSON.stringify({ lat: gpsFix.lat, lon: gpsFix.lon, t: gpsFix.t })); } catch (e) {}
     if (trk.rec) addPoint(gpsFix);
     if (trk.ret) { updateReturn(); renderRet(); scheduleSave(); }
-    mapDirty = true;
+    mapDirty = true; mapGlDirty = true;
     updateDeclination();
     renderGps();
   }
@@ -552,10 +552,267 @@
       if (trk.rec) renderTrk();
       if (pocketOn) pocketText();
       if (mapDirty) { mapDirty = false; drawMap(); }
+      if (mapObj && mapGlDirty) { mapGlDirty = false; updateOverlays(); }
     }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+
+  // ---------- Mapa offline (MapLibre + PMTiles) ----------
+  // O arquivo do mapa (vetorial, Nordeste até zoom 10) é baixado UMA vez, guardado no aparelho (Cache Storage)
+  // e lido da memória. Nenhuma chamada de rede é feita para desenhar o mapa.
+  var MAPA_URL = new URL('mapas/nordeste_z10.pmtiles', location.href).href;
+  var MAPA_BYTES = 22380675, MAPA_CACHE = 'bussola-mapa-v1';
+  var mapStatus = $('mapStatus'), bMapDl = $('bMapDl'), bMapOpen = $('bMapOpen'), bMapFollow = $('bMapFollow');
+  var bMapFit = $('bMapFit'), bMapDel = $('bMapDel'), mapEl = $('mapGl'), mapBar2 = $('mapBar2');
+  var mapState = 'unknown';     // unknown | none | downloading | ready | error
+  var mapObj = null, mapFollow = true, mapGlDirty = true, mapProto = null, lblMarkers = [], lblKey = '', mapMsg = '', lastFollow = '';
+
+  function webglOk() {
+    try { var c = document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch (e) { return false; }
+  }
+  function loadScript(src) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script'); s.src = src; s.onload = res;
+      s.onerror = function () { rej(new Error('falha ao carregar ' + src)); }; document.head.appendChild(s);
+    });
+  }
+  function loadCss(href) {
+    if (document.querySelector('link[href="' + href + '"]')) return;
+    var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; document.head.appendChild(l);
+  }
+  function memSource(buf) {
+    return { getKey: function () { return 'nordeste'; }, getBytes: function (o, l) { return Promise.resolve({ data: buf.slice(o, o + l) }); } };
+  }
+
+  function renderMap() {
+    var open = !!mapObj;
+    bMapDl.style.display = (mapState === 'none' || mapState === 'error') ? 'block' : 'none';
+    bMapOpen.style.display = mapState === 'ready' ? 'block' : 'none';
+    bMapOpen.textContent = open ? 'Fechar mapa' : 'Abrir mapa';
+    bMapFollow.style.display = open ? 'block' : 'none';
+    bMapFollow.textContent = 'Seguir: ' + (mapFollow ? 'sim' : 'não');
+    mapBar2.style.display = mapState === 'ready' ? 'flex' : 'none';
+    bMapFit.style.display = open ? 'block' : 'none';
+    var t = mapMsg;
+    if (!t) {
+      if (mapState === 'none') t = 'Mapa não baixado. Baixe com internet (de preferência Wi-Fi); depois funciona sem rede.';
+      else if (mapState === 'ready') t = open ? 'Mapa do Nordeste (offline). Detalhe de ruas locais não incluído; mapa até o zoom 10.' : 'Mapa do Nordeste baixado ✓ (funciona sem internet).';
+      else if (mapState === 'unknown') t = 'Verificando…';
+    }
+    mapStatus.textContent = t;
+  }
+
+  function refreshMap() {
+    if (!('caches' in window)) { mapState = 'error'; mapMsg = 'Este navegador não permite guardar o mapa no aparelho.'; renderMap(); return Promise.resolve(); }
+    return caches.open(MAPA_CACHE).then(function (c) { return c.match(MAPA_URL); }).then(function (r) {
+      mapState = r ? 'ready' : 'none'; renderMap();
+    }).catch(function () { mapState = 'none'; renderMap(); });
+  }
+
+  function baixarMapa() {
+    if (mapState === 'downloading') return;
+    mapState = 'downloading'; mapMsg = 'Baixando o mapa… 0%'; renderMap(); bMapDl.style.display = 'none';
+    fetch(MAPA_URL, { cache: 'no-store' }).then(function (res) {
+      if (!res.ok) throw new Error('servidor respondeu ' + res.status);
+      var rd = res.body.getReader(), chunks = [], got = 0;
+      return (function pump() {
+        return rd.read().then(function (x) {
+          if (x.done) return;
+          chunks.push(x.value); got += x.value.length;
+          mapMsg = 'Baixando o mapa… ' + Math.min(99, Math.round(got * 100 / MAPA_BYTES)) + '%'; mapStatus.textContent = mapMsg;
+          return pump();
+        });
+      })().then(function () {
+        if (got !== MAPA_BYTES) throw new Error('tamanho inesperado (' + got + ' bytes)');
+        var blob = new Blob(chunks, { type: 'application/octet-stream' });
+        return blob.slice(0, 7).arrayBuffer().then(function (h) {
+          if (new TextDecoder().decode(h) !== 'PMTiles') throw new Error('arquivo inválido');
+          return caches.open(MAPA_CACHE);
+        }).then(function (c) { return c.put(MAPA_URL, new Response(blob, { headers: { 'Content-Type': 'application/octet-stream' } })); });
+      });
+    }).then(function () {
+      try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+      mapMsg = ''; mapState = 'ready'; renderMap(); abrirMapa();
+    }).catch(function (e) {
+      mapState = 'none'; mapMsg = 'Falha ao baixar o mapa (' + (e && e.message ? e.message : e) + '). Verifique a internet e tente de novo.'; renderMap();
+      bMapDl.style.display = 'block';
+    });
+  }
+
+  function mapStyle() {
+    var Z = function (a, b) { return ['interpolate', ['linear'], ['zoom'], 3, a, 12, b]; };
+    var S = 'nordeste';
+    return {
+      version: 8,
+      sources: { nordeste: { type: 'vector', url: 'pmtiles://nordeste', attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' } },
+      layers: [
+        { id: 'bg', type: 'background', paint: { 'background-color': '#efece4' } },
+        { id: 'earth', type: 'fill', source: S, 'source-layer': 'earth', paint: { 'fill-color': '#efece4' } },
+        { id: 'landcover', type: 'fill', source: S, 'source-layer': 'landcover', paint: { 'fill-color': ['match', ['get', 'kind'],
+          'forest', '#c9e2b8', 'farmland', '#ecf1d2', 'grassland', '#dcebc3', 'scrub', '#d8e5b6', 'barren', '#e8e0c9', 'urban_area', '#e2ded6', '#efece4'] } },
+        { id: 'landuse', type: 'fill', source: S, 'source-layer': 'landuse', paint: { 'fill-opacity': 0.9, 'fill-color': ['match', ['get', 'kind'],
+          ['wood', 'forest'], '#c3deb0', ['national_park', 'nature_reserve', 'park', 'protected_area'], '#d3e8c4', 'wetland', '#cfe5df',
+          ['sand', 'beach'], '#f3e7bf', ['residential', 'commercial', 'retail', 'university', 'hospital'], '#e4dfd6',
+          ['industrial', 'military', 'railway', 'aerodrome'], '#e3dde8', ['farmland', 'meadow', 'grass', 'grassland', 'village_green', 'recreation_ground'], '#e6efcc',
+          'scrub', '#dbe7bb', '#efece4'] } },
+        { id: 'water', type: 'fill', source: S, 'source-layer': 'water', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#a7cfe8' } },
+        { id: 'water-line', type: 'line', source: S, 'source-layer': 'water', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#8dbfe0', 'line-width': Z(0.6, 2.5) } },
+        { id: 'boundaries', type: 'line', source: S, 'source-layer': 'boundaries', paint: { 'line-color': '#9a8fa8', 'line-dasharray': [3, 2], 'line-width': 0.9 } },
+        { id: 'roads', type: 'line', source: S, 'source-layer': 'roads', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: {
+          'line-color': ['match', ['get', 'kind'], 'highway', '#e8913a', 'major_road', '#f0bf55', 'medium_road', '#f4d98a', 'minor_road', '#ffffff',
+            'path', '#a9805f', 'rail', '#777777', 'aeroway', '#c9c9c9', '#bbbbbb'],
+          'line-width': ['interpolate', ['linear'], ['zoom'],
+            3, ['match', ['get', 'kind'], 'highway', 1.2, 'major_road', 0.8, 'medium_road', 0.6, 'aeroway', 0.8, 0.4],
+            12, ['match', ['get', 'kind'], 'highway', 4.5, 'major_road', 3.5, 'medium_road', 3, 'aeroway', 3, 2]] } }
+      ]
+    };
+  }
+
+  var EMPTY = { type: 'FeatureCollection', features: [] };
+  function addOverlayLayers() {
+    mapObj.addSource('trk', { type: 'geojson', data: EMPTY });
+    mapObj.addSource('pts', { type: 'geojson', data: EMPTY });
+    mapObj.addLayer({ id: 'trk-solid', type: 'line', source: 'trk', filter: ['==', ['get', 'g'], 0], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#1565ff', 'line-width': 4 } });
+    mapObj.addLayer({ id: 'trk-gap', type: 'line', source: 'trk', filter: ['==', ['get', 'g'], 1], paint: { 'line-color': '#ff8c00', 'line-width': 3, 'line-dasharray': [2, 2] } });
+    mapObj.addLayer({ id: 'pts-c', type: 'circle', source: 'pts', paint: {
+      'circle-radius': ['match', ['get', 't'], 'pos', 8, 'start', 7, 'tgt', 9, 5],
+      'circle-color': ['match', ['get', 't'], 'pos', '#0a84ff', 'start', '#2ecc71', 'tgt', 'rgba(61,220,132,0.25)', '#ff4d4d'],
+      'circle-stroke-color': ['match', ['get', 't'], 'tgt', '#1f7a4a', '#ffffff'],
+      'circle-stroke-width': ['match', ['get', 't'], 'pos', 3, 2] } });
+  }
+
+  function updateOverlays() {
+    if (!mapObj || !mapObj.getSource('trk') || !mapObj.getSource('pts')) return;
+    var pts = trk.pts, n = pts.length, solid = [], gap = [], cur = null, i, pt, prev = null, feats = [];
+    for (i = 0; i < n; i++) {
+      pt = [pts[i][1], pts[i][0]];
+      if (i === 0 || pts[i][4]) { if (i > 0) gap.push([prev, pt]); cur = [pt]; solid.push(cur); } else cur.push(pt);
+      prev = pt;
+    }
+    var lines = [];
+    var sl = solid.filter(function (l) { return l.length > 1; });
+    if (sl.length) lines.push({ type: 'Feature', properties: { g: 0 }, geometry: { type: 'MultiLineString', coordinates: sl } });
+    if (gap.length) lines.push({ type: 'Feature', properties: { g: 1 }, geometry: { type: 'MultiLineString', coordinates: gap } });
+    mapObj.getSource('trk').setData({ type: 'FeatureCollection', features: lines });
+    if (n) feats.push({ type: 'Feature', properties: { t: 'start' }, geometry: { type: 'Point', coordinates: [pts[0][1], pts[0][0]] } });
+    if (n > 1) feats.push({ type: 'Feature', properties: { t: 'end' }, geometry: { type: 'Point', coordinates: [pts[n - 1][1], pts[n - 1][0]] } });
+    if (trk.ret && ret && ret.target != null && pts[ret.target]) feats.push({ type: 'Feature', properties: { t: 'tgt' }, geometry: { type: 'Point', coordinates: [pts[ret.target][1], pts[ret.target][0]] } });
+    var live = gpsFix && !gpsFix.cached && gpsStatus === 'ok';
+    if (live) feats.push({ type: 'Feature', properties: { t: 'pos' }, geometry: { type: 'Point', coordinates: [gpsFix.lon, gpsFix.lat] } });
+    mapObj.getSource('pts').setData({ type: 'FeatureCollection', features: feats });
+    if (mapFollow && live) {
+      var k = gpsFix.lat.toFixed(5) + ',' + gpsFix.lon.toFixed(5);
+      if (k !== lastFollow) { lastFollow = k; mapObj.easeTo({ center: [gpsFix.lon, gpsFix.lat], duration: 500 }); }
+    }
+  }
+
+  // Nomes de lugares como rótulos HTML (fonte do sistema): evita baixar arquivos de fonte do mapa.
+  function updateLabels() {
+    if (!mapObj || !mapObj.isStyleLoaded()) return;
+    var c = mapObj.getCenter(), z = mapObj.getZoom(), key = z.toFixed(2) + '|' + c.lng.toFixed(3) + '|' + c.lat.toFixed(3);
+    if (key === lblKey) return; lblKey = key;
+    lblLoop();
+  }
+  function lblLoop() {
+    lblMarkers.forEach(function (m) { m.remove(); }); lblMarkers = [];
+    var z = mapObj.getZoom(), b = mapObj.getBounds(), seen = {}, cand = [];
+    var fs = [];
+    try { fs = mapObj.querySourceFeatures('nordeste', { sourceLayer: 'places' }); } catch (e) {}
+    fs.forEach(function (f) {
+      var p = f.properties || {}, k = p.kind;
+      if (!p.name || seen[p.name]) return;
+      if (k === 'region') { if (z > 7.5) return; }
+      else if (k === 'macrohood') { if (z < 11) return; }
+      else if (k === 'locality') { if (p.min_zoom != null && p.min_zoom > z + 0.5) return; }
+      else return;
+      var co = f.geometry && f.geometry.coordinates; if (!co || !b.contains(co)) return;
+      seen[p.name] = 1; cand.push({ n: p.name, c: co, r: (p.population_rank || 0) + (k === 'region' ? 100 : 0), k: k });
+    });
+    cand.sort(function (a, b2) { return b2.r - a.r; });
+    var boxes = [], cnt = 0;
+    for (var i = 0; i < cand.length && cnt < 24; i++) {
+      var o = cand[i], px = mapObj.project(o.c), w = o.n.length * 7 + 14, h = 16;
+      var box = [px.x, px.y - h / 2, px.x + w, px.y + h / 2], clash = false;
+      for (var j = 0; j < boxes.length; j++) { var q = boxes[j]; if (box[0] < q[2] && box[2] > q[0] && box[1] < q[3] && box[3] > q[1]) { clash = true; break; } }
+      if (clash) continue;
+      boxes.push(box); cnt++;
+      var el = document.createElement('div'); el.className = 'plbl' + (o.k === 'region' ? ' reg' : ' dot'); el.textContent = o.n;
+      lblMarkers.push(new maplibregl.Marker({ element: el, anchor: 'left' }).setLngLat(o.c).addTo(mapObj));
+    }
+  }
+
+  function fitInicial() {
+    var pts = trk.pts, live = gpsFix && !gpsFix.cached && gpsStatus === 'ok';
+    if (live) { mapObj.jumpTo({ center: [gpsFix.lon, gpsFix.lat], zoom: 12 }); return; }
+    if (pts.length > 1) { fitTrilha(0); return; }
+    if (gpsFix) { mapObj.jumpTo({ center: [gpsFix.lon, gpsFix.lat], zoom: 9 }); return; }
+    var r = typeof state.regionIdx === 'number' ? REGIOES[state.regionIdx] : null;
+    if (r) mapObj.jumpTo({ center: [r[2], r[1]], zoom: 8 }); else mapObj.jumpTo({ center: [-41.75, -9.7], zoom: 4.5 });
+  }
+  function fitTrilha(dur) {
+    var pts = trk.pts; if (!mapObj || pts.length < 2) return;
+    var b = new maplibregl.LngLatBounds([pts[0][1], pts[0][0]], [pts[0][1], pts[0][0]]);
+    pts.forEach(function (p) { b.extend([p[1], p[0]]); });
+    mapObj.fitBounds(b, { padding: 40, maxZoom: 13, duration: dur });
+  }
+
+  function abrirMapa() {
+    if (mapObj) return;
+    if (!webglOk()) { mapMsg = 'Este navegador não suporta WebGL: use o mapa simples da trilha (acima).'; renderMap(); return; }
+    mapMsg = 'Abrindo mapa…'; renderMap();
+    caches.open(MAPA_CACHE).then(function (c) { return c.match(MAPA_URL); }).then(function (r) {
+      if (!r) { mapState = 'none'; mapMsg = ''; renderMap(); return null; }
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      if (!buf) return;
+      loadCss('libs/maplibre-gl.css');
+      return (window.maplibregl ? Promise.resolve() : loadScript('libs/maplibre-gl.js'))
+        .then(function () { return window.pmtiles ? null : loadScript('libs/pmtiles.js'); })
+        .then(function () {
+          if (!mapProto) { mapProto = new pmtiles.Protocol(); maplibregl.addProtocol('pmtiles', mapProto.tile); }
+          mapProto.add(new pmtiles.PMTiles(memSource(buf)));
+          mapEl.style.display = 'block';
+          mapObj = new maplibregl.Map({ container: mapEl, style: mapStyle(), center: [-41.75, -9.7], zoom: 4.5, minZoom: 3, maxZoom: 13,
+            dragRotate: false, attributionControl: { compact: true }, fadeDuration: 0 });
+          mapObj.touchZoomRotate.disableRotation();
+          mapObj.on('load', function () { addOverlayLayers(); fitInicial(); mapGlDirty = true; mapMsg = ''; renderMap(); updateLabels(); });
+          mapObj.on('moveend', updateLabels);
+          mapObj.on('idle', updateLabels);
+          mapObj.on('dragstart', function () { if (mapFollow) { mapFollow = false; renderMap(); } });
+          mapObj.on('error', function (e) { if (e && e.error && !/AbortError/.test(String(e.error))) { mapMsg = 'Erro no mapa: ' + (e.error.message || e.error); renderMap(); } });
+          try { localStorage.setItem('bussolaMapaAberto', '1'); } catch (e) {}
+          mapMsg = ''; renderMap();
+        });
+    }).catch(function (e) { mapMsg = 'Não foi possível abrir o mapa (' + (e && e.message ? e.message : e) + ').'; renderMap(); });
+  }
+  function fecharMapa() {
+    if (!mapObj) return;
+    lblMarkers.forEach(function (m) { m.remove(); }); lblMarkers = []; lblKey = '';
+    mapObj.remove(); mapObj = null; mapEl.style.display = 'none'; mapMsg = '';
+    try { localStorage.setItem('bussolaMapaAberto', '0'); } catch (e) {}
+    renderMap();
+  }
+  var delArm = 0;
+  function removerMapa() {
+    if (Date.now() - delArm > 4000) {
+      delArm = Date.now(); bMapDel.textContent = 'Toque de novo p/ remover';
+      setTimeout(function () { bMapDel.textContent = 'Remover mapa'; }, 4000); return;
+    }
+    delArm = 0; bMapDel.textContent = 'Remover mapa';
+    fecharMapa();
+    caches.delete(MAPA_CACHE).then(function () { mapState = 'none'; mapMsg = ''; renderMap(); });
+  }
+
+  bMapDl.addEventListener('click', baixarMapa);
+  bMapOpen.addEventListener('click', function () { if (mapObj) fecharMapa(); else abrirMapa(); });
+  bMapFollow.addEventListener('click', function () { mapFollow = !mapFollow; lastFollow = ''; renderMap(); mapGlDirty = true; });
+  bMapFit.addEventListener('click', function () { mapFollow = false; renderMap(); fitTrilha(600); });
+  bMapDel.addEventListener('click', removerMapa);
+  refreshMap().then(function () {
+    try { if (mapState === 'ready' && localStorage.getItem('bussolaMapaAberto') === '1') abrirMapa(); } catch (e) {}
+  });
 
   // ---------- Inicialização ----------
   setRegion(state.regionIdx);
