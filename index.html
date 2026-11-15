@@ -8,7 +8,7 @@
 <link rel="icon" href="icon-192.png">
 <title>Bússola</title>
 <style>
-  :root { --bg:#0b1220; --fg:#e8eef9; --mut:#8fa0bd; --acc:#ff4d4d; --ok:#3ddc84; --card:#141d31; --line:#26324d; }
+  :root { --bg:#0b1220; --fg:#e8eef9; --mut:#8fa0bd; --acc:#ff4d4d; --ok:#3ddc84; --warn:#ffb020; --card:#141d31; --line:#26324d; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; min-height:100%; background:var(--bg); color:var(--fg);
     font-family:system-ui,-apple-system,Roboto,sans-serif; overscroll-behavior:none; }
@@ -28,18 +28,29 @@
   .seg button.on { background:#22407a; color:#fff; font-weight:600; }
   .cards { width:100%; max-width:440px; display:grid; grid-template-columns:1fr 1fr; gap:8px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:9px 10px; min-width:0; }
+  .card.wide { grid-column:1 / -1; }
   .card h2 { margin:0 0 6px; font-size:12px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--mut); }
   .card .v { font-size:13px; line-height:1.45; color:var(--fg); font-variant-numeric:tabular-nums; word-break:break-word; }
   .card .m { color:var(--mut); }
+  .card .w { color:var(--warn); }
   #lvlSvg { display:block; width:100%; max-width:118px; aspect-ratio:1; margin:0 auto 4px; }
   #lvlTxt { text-align:center; font-size:13px; font-variant-numeric:tabular-nums; }
   #lvlTxt.ok { color:var(--ok); font-weight:600; }
-  #gpsBtn { margin-top:6px; width:100%; background:#22407a; color:#fff; border:0; border-radius:8px; padding:9px 6px; font-size:14px; }
+  .btn { background:#22407a; color:#fff; border:0; border-radius:8px; padding:10px 6px; font-size:14px; flex:1; min-width:0; }
+  .btn.alt { background:#2a3550; }
+  .btn.rec { background:#b3261e; }
+  .btn.go { background:#1f7a4a; }
+  .btns { display:flex; gap:6px; margin:4px 0 8px; }
+  #gpsBtn { margin-top:6px; width:100%; }
+  #retTxt { margin-top:6px; }
+  #map { width:100%; height:190px; display:block; margin-top:8px; background:#101a2e; border:1px solid var(--line); border-radius:8px; }
   #info { width:100%; max-width:440px; font-size:13px; color:var(--mut); text-align:center; line-height:1.4; }
   #warn { width:100%; max-width:440px; font-size:13px; color:#ffcf66; text-align:center; }
   #warn:empty { display:none; }
   .dim { color:var(--fg); }
   #ver { font-size:11px; color:#56648a; }
+  #pocket { display:none; position:fixed; inset:0; background:#000; z-index:100; touch-action:none; user-select:none; -webkit-user-select:none; }
+  #pocket div { position:absolute; left:0; right:0; bottom:calc(24px + env(safe-area-inset-bottom)); text-align:center; color:#2c3550; font-size:13px; padding:0 20px; }
 </style>
 </head>
 <body>
@@ -78,10 +89,26 @@
     <div class="card">
       <h2>GPS</h2>
       <div class="v" id="gpsTxt">Desligado</div>
-      <button id="gpsBtn">Ativar GPS</button>
+      <button id="gpsBtn" class="btn">Ativar GPS</button>
+    </div>
+    <div class="card wide">
+      <h2>Trilha</h2>
+      <div class="btns">
+        <button id="bRec" class="btn">● Gravar</button>
+        <button id="bRet" class="btn alt">↩ Voltar</button>
+        <button id="bPocket" class="btn alt">🔒 Bolso</button>
+      </div>
+      <div class="v" id="trkTxt">Sem trilha gravada.</div>
+      <div class="v" id="retTxt"></div>
+      <canvas id="map"></canvas>
+      <div class="btns" style="margin-bottom:0">
+        <button id="bGpx" class="btn alt">Exportar GPX</button>
+        <button id="bClr" class="btn alt">Limpar trilha</button>
+      </div>
     </div>
   </div>
   <div id="ver"></div>
+  <div id="pocket"><div id="pocketTxt"></div></div>
 <script src="wmm.js"></script>
 <script src="app.js"></script>
 </body>
